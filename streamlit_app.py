@@ -1,151 +1,85 @@
 import streamlit as st
 import pandas as pd
-import math
+import altair as alt
 from pathlib import Path
 
-# Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title='EDM Streams Dashboard',
+    page_icon=':musical_note:',
 )
-
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
 
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
+def get_edm_data():
     DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    df = pd.read_csv(DATA_FILENAME, delimiter=';', header=None, low_memory=False)
+    # First three rows are headers
+    artist_row = df.iloc[0]
+    song_row = df.iloc[1]
+    data = df.iloc[3:].reset_index(drop=True)
+    data.columns = artist_row  # Use artist names as columns
+    return data, artist_row, song_row
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+data, artist_row, song_row = get_edm_data()
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+st.title(":musical_note: EDM Streams Dashboard")
+st.write("Compare combined stream volume for each artist (all songs summed).")
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# Convert date column to datetime for filtering
+data = data.copy()
+data['Date'] = pd.to_datetime(data[data.columns[0]], errors='coerce')
 
-    return gdp_df
+# Build artist -> list of columns mapping (grouping all columns with the same artist name)
+artist_cols = {}
+for idx, artist in enumerate(artist_row[1:]):  # skip 'Date' column
+    artist = str(artist).strip()
+    col = data.columns[idx+1]  # +1 to skip 'Date'
+    if artist not in artist_cols:
+        artist_cols[artist] = []
+    artist_cols[artist].append(col)
 
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+# Only unique artist names in the dropdown
+artist_names = sorted(artist_cols.keys())
+selected_artists = st.multiselect(
+    "Select Artist(s) to compare (combined streams of all their songs)",
+    artist_names,
+    default=artist_names[:2]
 )
 
-''
-''
+# Year range slider
+min_year = data['Date'].dt.year.min()
+max_year = data['Date'].dt.year.max()
+year_range = st.slider(
+    "Select Year Range",
+    int(min_year), int(max_year), (int(min_year), int(max_year))
+)
 
+if selected_artists:
+    combined_df = pd.DataFrame({'Date': data['Date']})
+    for artist in selected_artists:
+        cols = artist_cols[artist]
+        # Sum streams across all songs for this artist
+        streams = data[cols].apply(pd.to_numeric, errors='coerce').sum(axis=1)
+        combined_df[artist] = streams
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+    # Filter by year range
+    combined_df = combined_df[
+        (combined_df['Date'].dt.year >= year_range[0]) &
+        (combined_df['Date'].dt.year <= year_range[1])
+    ]
 
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    # Melt for Altair
+    df_melt = combined_df.melt(id_vars='Date', var_name='Artist', value_name='Streams')
+    chart = alt.Chart(df_melt).mark_line().encode(
+        x='Date:T',
+        y='Streams:Q',
+        color=alt.Color('Artist:N', scale=alt.Scale(scheme='tableau20')),
+        tooltip=['Artist', 'Date', 'Streams']
+    ).properties(
+        width=800,
+        height=400,
+        title="Combined Streams Over Time by Artist"
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.dataframe(df_melt)
+else:
+    st.info("Please select at least one artist to view the data.")
