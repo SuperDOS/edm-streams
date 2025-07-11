@@ -6,6 +6,7 @@ from pathlib import Path
 st.set_page_config(
     page_title='EDM Streams Dashboard',
     page_icon=':musical_note:',
+    layout='wide'  # Use full screen width
 )
 
 @st.cache_data
@@ -53,12 +54,27 @@ year_range = st.slider(
     int(min_year), int(max_year), (int(min_year), int(max_year))
 )
 
+# Add normalization option
+norm_option = st.radio(
+    "Stream Value Display",
+    ["Raw Streams", "Indexed (0-100 per artist)"],
+    horizontal=True
+)
+
 if selected_artists:
     combined_df = pd.DataFrame({'Date': data['Date']})
     for artist in selected_artists:
         cols = artist_cols[artist]
         # Sum streams across all songs for this artist
         streams = data[cols].apply(pd.to_numeric, errors='coerce').sum(axis=1)
+        if norm_option == "Indexed (0-100 per artist)":
+            # Min-max scale each artist's streams to 0-100
+            min_val = streams.min()
+            max_val = streams.max()
+            if max_val > min_val:
+                streams = (streams - min_val) / (max_val - min_val) * 100
+            else:
+                streams = 0  # If all values are the same
         combined_df[artist] = streams
 
     # Filter by year range
@@ -75,7 +91,7 @@ if selected_artists:
         color=alt.Color('Artist:N', scale=alt.Scale(scheme='tableau20')),
         tooltip=['Artist', 'Date', 'Streams']
     ).properties(
-        width=800,
+        width='container',  # Use full container width
         height=400,
         title="Combined Streams Over Time by Artist"
     )
